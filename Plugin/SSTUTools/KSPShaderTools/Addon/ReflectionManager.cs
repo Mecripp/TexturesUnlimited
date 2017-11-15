@@ -77,14 +77,11 @@ namespace KSPShaderTools
         public Camera reflectionCamera;
 
         /// <summary>
-        /// Map of vessels and their reflection probe data
-        /// </summary>
-        public readonly Dictionary<Vessel, VesselReflectionData> vesselReflectionProbeDict = new Dictionary<Vessel, VesselReflectionData>();
-        
-        /// <summary>
         /// The reflection data for inside of the (current) editor.  Should be rebuilt whenever the editor is initialized, closed, or change
         /// </summary>
         public EditorReflectionData editorReflectionData;
+
+        public VesselReflectionData vesselReflectionData;
 
         //Mod interop stuff
 
@@ -101,9 +98,6 @@ namespace KSPShaderTools
 
         internal List<ReflectionPass> renderStack = new List<ReflectionPass>();
         
-        private EventData<Vessel>.OnEvent vesselCreateEvent;
-        private EventData<Vessel>.OnEvent vesselDestroyedEvent;
-
         private ReflectionDebugGUI gui;
         private static ApplicationLauncherButton debugAppButton;
 
@@ -153,10 +147,6 @@ namespace KSPShaderTools
             export = node.GetBoolValue("exportDebugCubes", false);
 
             init();
-            vesselCreateEvent = new EventData<Vessel>.OnEvent(vesselCreated);
-            vesselDestroyedEvent = new EventData<Vessel>.OnEvent(vesselDestroyed);
-            GameEvents.onVesselCreate.Add(vesselCreateEvent);
-            GameEvents.onVesselDestroy.Add(vesselDestroyedEvent);
 
             Texture2D tex;
             if (debugAppButton == null && debug)//static reference; track if the button was EVER created, as KSP keeps them even if the addon is destroyed
@@ -220,14 +210,9 @@ namespace KSPShaderTools
         public void OnDestroy()
         {
             MonoBehaviour.print("SSTUReflectionManager OnDestroy()");
-            if (instance == this) { instance = null; }
-            if (vesselCreateEvent != null)
+            if (instance == this)
             {
-                GameEvents.onVesselCreate.Remove(vesselCreateEvent);
-            }
-            if (vesselDestroyedEvent != null)
-            {
-                GameEvents.onVesselDestroy.Remove(vesselDestroyedEvent);
+                instance = null;
             }
             if (gui != null)
             {
@@ -270,7 +255,9 @@ namespace KSPShaderTools
             }
             else if (HighLogic.LoadedSceneIsFlight)
             {
-                //vessels are added thorugh an event as they are loaded
+                ReflectionProbeData data = createProbe();
+                vesselReflectionData = new VesselReflectionData(data);
+                MonoBehaviour.print("SSTUReflectionManager created flight reflection data: " + data + " :: " + vesselReflectionData);
             }
 
             //TODO -- replace with custom baked skybox...
@@ -278,21 +265,6 @@ namespace KSPShaderTools
             //RenderSettings.customReflection = customCubemap;
 
             //TODO -- pre-bake cubemap to use as the custom skybox in the reflection probe camera; this can be higher res and updated far less often (every couple of seconds?)
-        }
-
-        public void vesselCreated(Vessel vessel)
-        {
-            ReflectionProbeData data = createProbe();
-            data.reflectionSphere.transform.position = vessel.transform.position;
-            VesselReflectionData d = new VesselReflectionData(vessel, data);
-            vesselReflectionProbeDict.Add(vessel, d);
-            MonoBehaviour.print("SSTUReflectionManager vesselCreated() : " + vessel+" :: "+d);
-        }
-
-        public void vesselDestroyed(Vessel v)
-        {
-            MonoBehaviour.print("SSTUReflectionManager vesselDestroyed() : " + v);
-            vesselReflectionProbeDict.Remove(v);
         }
 
         public void updateReflections(bool force = false)
@@ -320,29 +292,30 @@ namespace KSPShaderTools
                     }
                 }
             }
-            else
+            else if(vesselReflectionData!=null)//unpossible, but w/e
             {
-                foreach (VesselReflectionData d in vesselReflectionProbeDict.Values)
+                if (FlightIntegrator.ActiveVesselFI != null && FlightIntegrator.ActiveVesselFI.Vessel != null && FlightIntegrator.ActiveVesselFI.Vessel.loaded)
                 {
-                    if (d.vessel.loaded)
+                    VesselReflectionData d = this.vesselReflectionData;
+                    Vessel v = FlightIntegrator.ActiveVesselFI.Vessel;
+                    d.probeData.reflectionSphere.transform.position = v.transform.position;
+                    if (force)
                     {
-                        d.probeData.reflectionSphere.transform.position = d.vessel.transform.position;
-                        if (force)
+                        renderFullCube(d.probeData.renderedCube, v.transform.position);
+                        updateProbe(d.probeData);
+                        if (export)
                         {
-                            renderFullCube(d.probeData.renderedCube, d.vessel.transform.position);
-                            updateProbe(d.probeData);
-                            if (export)
-                            {
-                                exportCubemap(d.probeData.renderedCube, "vesselReflect-" + d.vessel.name);
-                            }
-                            continue;
+                            exportCubemap(d.probeData.renderedCube, "vesselReflect-" + v.name);
                         }
+                    }
+                    else
+                    {
                         d.probeData.updateTime++;
                         if (d.probeData.updateTime >= mapUpdateSpacing)
                         {
                             for (int i = 0; i < numberOfFaces && d.probeData.updateFace < 6; i++)
                             {
-                                renderFace(d.probeData.renderedCube, d.probeData.updateFace, d.vessel.transform.position);
+                                renderFace(d.probeData.renderedCube, d.probeData.updateFace, v.transform.position);
                                 d.probeData.updateFace++;
                             }
                             if (d.probeData.updateFace >= 6)
@@ -641,11 +614,9 @@ namespace KSPShaderTools
 
         public class VesselReflectionData
         {
-            public readonly Vessel vessel;
             public readonly ReflectionProbeData probeData;
-            public VesselReflectionData(Vessel v, ReflectionProbeData data)
+            public VesselReflectionData(ReflectionProbeData data)
             {
-                this.vessel = v;
                 this.probeData = data;
             }
         }
